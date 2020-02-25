@@ -1,0 +1,51 @@
+#!/bin/bash
+
+declare -r kernel_src="/home/$(whoami)/srcs/linux"
+declare -r usr_include="/usr/include"
+declare -r java_include="/usr/lib/jvm/java-8-openjdk-amd64/include"
+
+declare ctags_extra_args="$usr_include"
+declare cscope_extra_args="-s$usr_include"
+
+usage() {
+    echo "otags [-k] [path1..pathN]"
+    echo "-k,--kernel - add tags for linux kernel ($kernel_src)"
+    echo "-j,--java   - add tags for java includes ($java_include)"
+    echo "-c,--clean  - only current directory"
+}
+
+while [ "$1" != "" ]; do
+    case $1 in
+        -k | --kernel ) shift
+            ctags_extra_args="$kernel_src"
+            cscope_extra_args="-k -s$kernel_src"
+            ;;
+        -j | --java ) shift
+            ctags_extra_args="$ctags_extra_args $java_include"
+            cscope_extra_args="$cscope_extra_args -s$java_include"
+            ;;
+        -c | --clean ) shift
+            ctags_extra_args=
+            cscope_extra_args="-k"
+            ;;
+        -h | --help ) usage
+            exit 1
+            ;;
+        -* ) usage
+            exit 1
+            ;;
+        * ) break
+    esac
+done
+
+declare -r ctags_cmd="ctags --c++-kinds=+p --fields=+iaS --extra=+q -R $ctags_extra_args . $@"
+# fkst
+rm -f tags
+echo "Running $ctags_cmd"
+$ctags_cmd
+
+#rm -f cscope.out
+declare -r cscope_cmd="cscope -Rbv $cscope_extra_args"
+echo "Running $cscope_cmd"
+$cscope_cmd
+echo "done"
