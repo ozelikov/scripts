@@ -1,0 +1,41 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+
+my $Xauthority = glob("~/.Xauthority");
+my $lightdm = "/var/run/lightdm/root/:0";
+
+sub main
+{
+    die "Should run as root" if $> != 0;
+
+    my $auth = read_authority();
+
+    open(my $fh, ">> $lightdm") or die "Couldn't open $lightdm for writing, $!";
+
+    print("Writing '$auth' to '$lightdm'\n");
+    print "\nAre you sure? (yes/No): ";
+    my $user = <STDIN>;
+    chop $user;
+    die "Aborted\n" if $user !~ /^[yY]/;
+
+    print $fh $auth;
+
+    print("Done.\n");
+    return 0;
+}
+
+sub read_authority
+{
+    die "$Xauthority file is missing" if not -r $Xauthority;
+    print("Found $Xauthority\n");
+    open(my $fh, "<$Xauthority") or die "Couldn't open $Xauthority, $1";
+
+    my $entry = <$fh>;
+    die "$Xauthority file is empty" if not $entry;
+    chomp $entry;
+
+    return $entry;
+}
+
+exit main();
