@@ -60,7 +60,7 @@ declare -r files=$(find . $extra_paths \
     )
 
 echo "Found $(echo $files | wc -w) files"
-for x in $files; do echo $x; done; exit 1
+#for x in $files; do echo $x; done; exit 1
 
 declare -r ctags_cmd="ctags --c++-kinds=+p --fields=+iaS --extra=+q"
 rm -f tags
