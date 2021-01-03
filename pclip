@@ -1,0 +1,147 @@
+#!/usr/bin/perl
+
+use warnings;
+use strict;
+use Getopt::Long;
+
+my $ip = "dev";
+my $delim = "AaAaAaAaAaKAKABbBbBb";
+my $shared = "/mnt/c/Users/ozelikov/Downloads/shared-dev/";
+my $remote_shared = "~/vm/shared/win-shared";
+
+
+GetOptions(
+    "ip=s" => \$ip,
+    "shared=s" => \$shared,
+    "help" => sub { print("Usage: pclip [-ip=<ip>]\n"); exit(1); }
+);
+
+sub main
+{
+    open(my $fh, "ssh -o ConnectTimeout=10 -o ServerAliveInterval=60 $ip 'while true; do DISPLAY=:0 xsel -o; echo $delim; sleep 1; done'|")
+        or die "ssh command failed, $!";
+
+    my $prev_remote_data = "";
+    my $prev_win_data;
+    my $prev_shared_files;
+
+    while (1)
+    {
+        my $remote_data = get_message($fh);
+        last if not defined $remote_data;
+
+        $prev_remote_data = $remote_data if not defined $prev_remote_data;
+
+        if ($remote_data ne $prev_remote_data) {
+            print "****** NEW REMOTE DATA ******\n";
+            print "'$remote_data'\n";
+            print "*****************************\n";
+            copy_to_win_clipboard($remote_data);
+            $prev_remote_data = $remote_data;
+            $prev_win_data = undef;
+        }
+
+        my $win_data = read_win_clipboard();
+        $prev_win_data = $win_data if not defined $prev_win_data;
+        if ($win_data ne $prev_win_data) {
+            #print "len: ", length($prev_win_data), "'$prev_win_data'\n";
+            print "****** NEW LOCAL DATA *******\n";
+            print "len: ", length($win_data) ," '$win_data'\n";
+            print "*****************************\n";
+            $prev_win_data = $win_data;
+            $prev_remote_data = undef;
+            copy_to_remote_clipboard($ip, $win_data);
+        }
+
+        my @files = sort glob("$shared/*");
+        send_new_files($prev_shared_files, \@files);
+        $prev_shared_files = \@files;
+    }
+
+    return 0;
+}
+
+sub send_new_files
+{
+    my ($old_files, $new_files) = @_;
+
+    return if not defined $old_files;
+
+    my %old = map{ $_ => 1 } @$old_files;
+    my @added = grep { not $old{$_} } @$new_files;
+
+
+    my @ignored = grep { $_ =~ /Unconfirmed/ } @added;
+    @added = grep { $_ !~ /Unconfirmed/ } @added;
+
+    if (@ignored) {
+        print "****** SKIPPING FILES *******\n";
+        print("$_\n") foreach @ignored;
+        print "*****************************\n";
+    }
+
+    if (@added) {
+        print "****** COPYING FILES *******\n";
+        system("scp '$_' $ip:$remote_shared") foreach @added;
+        print "*****************************\n";
+    }
+}
+
+my $get_message_buf = "";
+sub get_message
+{
+    my ($fh) = @_;
+    while (my $line = <$fh>)
+    {
+        #print "got: '$line'\n";
+        $get_message_buf .= $line;
+        my ($msg, $rest) = split /$delim\n/m, $get_message_buf;
+        if (defined $msg and defined $rest) {
+            $get_message_buf = $rest;
+            #print "msg: '$msg'\n";
+            #print "rest: '$rest'\n";
+            return $msg;
+        }
+    }
+}
+
+sub read_win_clipboard
+{
+    # my $out = `powershell.exe Get-Clipboard`;
+    my $out = `cat /dev/clipboard`;
+    $out = "" if not defined $out;
+    $out =~ s/\r\n$//m;
+
+    #print $out, "\n";
+    return $out;
+}
+
+sub copy_to_win_clipboard2
+{
+    my ($remote_data) = @_;
+    open(my $fh, "| clip.exe") or die "clip.exe command failed $!";
+    print $fh $remote_data;
+    close($fh);
+    print("updated win clipboard\n");
+}
+
+sub copy_to_win_clipboard
+{
+    my ($remote_data) = @_;
+    open(my $fh, ">tmp.txt") or die "couldn't open tmp.txt for writing, $!";
+    print $fh $remote_data;
+    close($fh);
+    system("clip.exe < tmp.txt");
+    print("updated win clipboard\n");
+}
+
+
+sub copy_to_remote_clipboard
+{
+    my ($ip, $data) = @_;
+    open(my $fh, "| ssh $ip 'cat -|DISPLAY=:0 xsel -i'")
+        or die "ssh...xsel command failed $!";
+    print $fh "$data";
+}
+
+exit main();
