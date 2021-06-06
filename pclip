@@ -5,17 +5,20 @@ use strict;
 use Getopt::Long;
 
 my $ip = "dev";
+my $user = $ENV{USER};
 my $delim = "AaAaAaAaAaKAKABbBbBb";
 my $shared = "/Users/ozelikov/Downloads/shared-dev/";
 my $remote_shared = "~/vm/shared/mac";
 my $local_tmp_file = "/tmp/pclip_tmp.txt";
-my $remote_clip_file = "/var/run/pclip.txt";
 
 GetOptions(
     "ip=s" => \$ip,
+    "user=s" => \$user,
     "shared=s" => \$shared,
     "help" => sub { print("Usage: pclip [-ip=<ip>]\n"); exit(1); }
 );
+
+my $remote_clip_file = "/tmp/pclip_${user}.txt";
 
 sub main
 {
@@ -63,11 +66,24 @@ sub main
     return 0;
 }
 
-sub connect_to_remote
+sub connect_to_remote_xsel
 {
     my $ssh_opt = "-o ConnectTimeout=10 -o ServerAliveCountMax=2 -o ServerAliveInterval=60";
 
     open(my $fh, "ssh $ssh_opt $ip 'while true; do DISPLAY=:0 xsel -o; echo $delim; sleep 1; done'|");
+
+    print("ssh command failed, $!\n") if not $fh;
+    print("connected to remote\n") if $fh;
+
+    return $fh;
+}
+
+sub connect_to_remote
+{
+    my $ssh_opt = "-o ConnectTimeout=10 -o ServerAliveCountMax=2 -o ServerAliveInterval=60";
+    $ssh_opt = "";
+
+    open(my $fh, "ssh $ssh_opt $ip 'while true; do cat $remote_clip_file 2>/dev/null ; echo $delim; sleep 1; done'|");
 
     print("ssh command failed, $!\n") if not $fh;
     print("connected to remote\n") if $fh;
