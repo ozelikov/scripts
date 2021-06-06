@@ -8,7 +8,8 @@ my $ip = "dev";
 my $delim = "AaAaAaAaAaKAKABbBbBb";
 my $shared = "/Users/ozelikov/Downloads/shared-dev/";
 my $remote_shared = "~/vm/shared/mac";
-my $tmp_file = "/tmp/pclip_tmp.txt";
+my $local_tmp_file = "/tmp/pclip_tmp.txt";
+my $remote_clip_file = "/var/run/pclip.txt";
 
 GetOptions(
     "ip=s" => \$ip,
@@ -64,7 +65,9 @@ sub main
 
 sub connect_to_remote
 {
-    open(my $fh, "ssh -o ConnectTimeout=10 -o ServerAliveCountMax=2 -o ServerAliveInterval=60 $ip 'while true; do DISPLAY=:0 xsel -o; echo $delim; sleep 1; done'|");
+    my $ssh_opt = "-o ConnectTimeout=10 -o ServerAliveCountMax=2 -o ServerAliveInterval=60";
+
+    open(my $fh, "ssh $ssh_opt $ip 'while true; do DISPLAY=:0 xsel -o; echo $delim; sleep 1; done'|");
 
     print("ssh command failed, $!\n") if not $fh;
     print("connected to remote\n") if $fh;
@@ -147,10 +150,10 @@ sub read_local_clipboard
 sub copy_to_local_clipboard
 {
     my ($remote_data) = @_;
-    open(my $fh, ">$tmp_file") or die "couldn't open $tmp_file for writing, $!";
+    open(my $fh, ">$local_tmp_file") or die "couldn't open $local_tmp_file for writing, $!";
     print $fh $remote_data;
     close($fh);
-    system("pbcopy < $tmp_file");
+    system("pbcopy < $local_tmp_file");
     print("updated local clipboard\n");
 }
 
