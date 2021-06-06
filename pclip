@@ -6,9 +6,9 @@ use Getopt::Long;
 
 my $ip = "dev";
 my $delim = "AaAaAaAaAaKAKABbBbBb";
-my $shared = "/mnt/c/Users/ozelikov/Downloads/shared-dev/";
-my $remote_shared = "~/vm/shared/win-shared";
-
+my $shared = "/Users/ozelikov/Downloads/shared-dev/";
+my $remote_shared = "~/vm/shared/mac";
+my $tmp_file = "/tmp/pclip_tmp.txt";
 
 GetOptions(
     "ip=s" => \$ip,
@@ -18,16 +18,16 @@ GetOptions(
 
 sub main
 {
-    open(my $fh, "ssh -o ConnectTimeout=10 -o ServerAliveInterval=60 $ip 'while true; do DISPLAY=:0 xsel -o; echo $delim; sleep 1; done'|")
-        or die "ssh command failed, $!";
+    print("Starting - ".localtime()."\n");
+    my $fh;
 
     my $prev_remote_data = "";
-    my $prev_win_data;
+    my $prev_local_data;
     my $prev_shared_files;
 
     while (1)
     {
-        my $remote_data = get_message($fh);
+        my $remote_data = get_message(\$fh);
         last if not defined $remote_data;
 
         $prev_remote_data = $remote_data if not defined $prev_remote_data;
@@ -36,21 +36,22 @@ sub main
             print "****** NEW REMOTE DATA ******\n";
             print "'$remote_data'\n";
             print "*****************************\n";
-            copy_to_win_clipboard($remote_data);
+            copy_to_local_clipboard($remote_data);
             $prev_remote_data = $remote_data;
-            $prev_win_data = undef;
+            $prev_local_data = undef;
         }
 
-        my $win_data = read_win_clipboard();
-        $prev_win_data = $win_data if not defined $prev_win_data;
-        if ($win_data ne $prev_win_data) {
-            #print "len: ", length($prev_win_data), "'$prev_win_data'\n";
+        my $local_data = read_local_clipboard();
+        $prev_local_data = $local_data if not defined $prev_local_data;
+        if ($local_data ne $prev_local_data) {
+            #print "len: ", length($prev_local_data), "'$prev_local_data'\n";
             print "****** NEW LOCAL DATA *******\n";
-            print "len: ", length($win_data) ," '$win_data'\n";
+            print "len: ", length($local_data) ," '$local_data'\n";
             print "*****************************\n";
-            $prev_win_data = $win_data;
+            $prev_local_data = $local_data;
             $prev_remote_data = undef;
-            copy_to_remote_clipboard($ip, $win_data);
+            copy_to_remote_clipboard($ip, $local_data);
+            print "Copied to remote clipboard\n";
         }
 
         my @files = sort glob("$shared/*");
@@ -59,6 +60,16 @@ sub main
     }
 
     return 0;
+}
+
+sub connect_to_remote
+{
+    open(my $fh, "ssh -o ConnectTimeout=10 -o ServerAliveCountMax=2 -o ServerAliveInterval=60 $ip 'while true; do DISPLAY=:0 xsel -o; echo $delim; sleep 1; done'|");
+
+    print("ssh command failed, $!\n") if not $fh;
+    print("connected to remote\n") if $fh;
+
+    return $fh;
 }
 
 sub send_new_files
@@ -88,11 +99,24 @@ sub send_new_files
 }
 
 my $get_message_buf = "";
+my $last_status_time = time;
 sub get_message
 {
-    my ($fh) = @_;
+    my ($pfh) = @_;
+
+    $$pfh = connect_to_remote() if not $$pfh;
+    my $fh = $$pfh;
+    if (not $fh) {
+        sleep(10);
+        return "";
+    }
+
     while (my $line = <$fh>)
     {
+        if (not $line) {
+            print("got empty line from remote machine\n");
+            return "";
+        }
         #print "got: '$line'\n";
         $get_message_buf .= $line;
         my ($msg, $rest) = split /$delim\n/m, $get_message_buf;
@@ -103,12 +127,16 @@ sub get_message
             return $msg;
         }
     }
+    print localtime()." - No message from peer, disconnecting\n";
+    close($fh);
+    $$pfh = undef;
+    return "";
 }
 
-sub read_win_clipboard
+sub read_local_clipboard
 {
     # my $out = `powershell.exe Get-Clipboard`;
-    my $out = `cat /dev/clipboard`;
+    my $out = `pbpaste`;
     $out = "" if not defined $out;
     $out =~ s/\r\n$//m;
 
@@ -116,25 +144,15 @@ sub read_win_clipboard
     return $out;
 }
 
-sub copy_to_win_clipboard2
+sub copy_to_local_clipboard
 {
     my ($remote_data) = @_;
-    open(my $fh, "| clip.exe") or die "clip.exe command failed $!";
+    open(my $fh, ">$tmp_file") or die "couldn't open $tmp_file for writing, $!";
     print $fh $remote_data;
     close($fh);
-    print("updated win clipboard\n");
+    system("pbcopy < $tmp_file");
+    print("updated local clipboard\n");
 }
-
-sub copy_to_win_clipboard
-{
-    my ($remote_data) = @_;
-    open(my $fh, ">tmp.txt") or die "couldn't open tmp.txt for writing, $!";
-    print $fh $remote_data;
-    close($fh);
-    system("clip.exe < tmp.txt");
-    print("updated win clipboard\n");
-}
-
 
 sub copy_to_remote_clipboard
 {
@@ -142,6 +160,7 @@ sub copy_to_remote_clipboard
     open(my $fh, "| ssh $ip 'cat -|DISPLAY=:0 xsel -i'")
         or die "ssh...xsel command failed $!";
     print $fh "$data";
+    print("updated remote clipboard\n");
 }
 
 exit main();
