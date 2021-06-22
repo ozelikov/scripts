@@ -4,7 +4,8 @@ use warnings;
 use strict;
 use Getopt::Long;
 
-my $ip = "dev";
+my @default_ips = ("dev", "qdev");
+my @ips;
 my $user = $ENV{USER};
 my $delim = "AaAaAaAaAaKAKABbBbBb";
 my $shared = "/Users/ozelikov/Downloads/shared-dev/";
@@ -12,7 +13,7 @@ my $remote_shared = "~/vm/shared/mac";
 my $local_tmp_file = "/tmp/pclip_tmp.txt";
 
 GetOptions(
-    "ip=s" => \$ip,
+    "ip=s" => \@ips,
     "user=s" => \$user,
     "shared=s" => \$shared,
     "help" => sub { print("Usage: pclip [-ip=<ip>]\n"); exit(1); }
@@ -22,7 +23,10 @@ my $remote_clip_file = "/tmp/pclip_${user}.txt";
 
 sub main
 {
+    @ips = @default_ips if not @ips;
+
     print("Starting - ".localtime()."\n");
+    print("Remote machine(s): ".join(", ", @ips)."\n");
     my $fh;
 
     my $prev_remote_data = "";
@@ -31,7 +35,7 @@ sub main
 
     while (1)
     {
-        my $remote_data = get_message(\$fh);
+        my $remote_data = get_message($ips[0], \$fh);
         last if not defined $remote_data;
 
         $prev_remote_data = $remote_data if not defined $prev_remote_data;
@@ -41,6 +45,7 @@ sub main
             print "'$remote_data'\n";
             print "*****************************\n";
             copy_to_local_clipboard($remote_data);
+            copy_to_remote_clipboard([$ips[1]], $remote_data);
             $prev_remote_data = $remote_data;
             $prev_local_data = undef;
         }
@@ -54,7 +59,7 @@ sub main
             print "*****************************\n";
             $prev_local_data = $local_data;
             $prev_remote_data = undef;
-            copy_to_remote_clipboard($ip, $local_data);
+            copy_to_remote_clipboard(\@ips, $local_data);
             print "Copied to remote clipboard\n";
         }
 
@@ -68,6 +73,7 @@ sub main
 
 sub connect_to_remote_xsel
 {
+    my ($ip) = @_;
     my $ssh_opt = "-o ConnectTimeout=10 -o ServerAliveCountMax=2 -o ServerAliveInterval=60";
 
     open(my $fh, "ssh $ssh_opt $ip 'while true; do DISPLAY=:0 xsel -o; echo $delim; sleep 1; done'|");
@@ -80,13 +86,15 @@ sub connect_to_remote_xsel
 
 sub connect_to_remote
 {
+    my ($ip) = @_;
     my $ssh_opt = "-o ConnectTimeout=10 -o ServerAliveCountMax=2 -o ServerAliveInterval=60";
     $ssh_opt = "";
+    my $script = "while true; do cat $remote_clip_file 2>/dev/null ; echo $delim; sleep 1; done";
 
-    open(my $fh, "ssh $ssh_opt $ip 'while true; do cat $remote_clip_file 2>/dev/null ; echo $delim; sleep 1; done'|");
+    open(my $fh, "ssh $ssh_opt $ip '$script' |");
 
     print("ssh command failed, $!\n") if not $fh;
-    print("connected to remote\n") if $fh;
+    print("connected to $ip\n") if $fh;
 
     return $fh;
 }
@@ -112,7 +120,7 @@ sub send_new_files
 
     if (@added) {
         print "****** COPYING FILES *******\n";
-        system("scp '$_' $ip:$remote_shared") foreach @added;
+        system("scp '$_' $ips[0]:$remote_shared") foreach @added;
         print "*****************************\n";
     }
 }
@@ -121,22 +129,23 @@ my $get_message_buf = "";
 my $last_status_time = time;
 sub get_message
 {
-    my ($pfh) = @_;
+    my ($ip, $pfh) = @_;
 
-    $$pfh = connect_to_remote() if not $$pfh;
+    $$pfh = connect_to_remote($ip) if not $$pfh;
     my $fh = $$pfh;
     if (not $fh) {
         sleep(10);
         return "";
     }
 
-    while (my $line = <$fh>)
+    while (1)
     {
+        print "reading line\n";
+        my $line = <$fh>;
         if (not $line) {
-            print("got empty line from remote machine\n");
-            return "";
+            last;
         }
-        #print "got: '$line'\n";
+        print localtime()." got: '$line'\n";
         $get_message_buf .= $line;
         my ($msg, $rest) = split /$delim\n/m, $get_message_buf;
         if (defined $msg and defined $rest) {
@@ -173,13 +182,24 @@ sub copy_to_local_clipboard
     print("updated local clipboard\n");
 }
 
-sub copy_to_remote_clipboard
+sub copy_to_remote_clipboard_xsel
 {
     my ($ip, $data) = @_;
     open(my $fh, "| ssh $ip 'cat -|DISPLAY=:0 xsel -i'")
         or die "ssh...xsel command failed $!";
     print $fh "$data";
     print("updated remote clipboard\n");
+}
+
+sub copy_to_remote_clipboard
+{
+    my ($ips, $data) = @_;
+    foreach my $ip (@$ips) {
+        open(my $fh, "| ssh $ip 'cat > $remote_clip_file'")
+            or die "ssh...cat command failed $!";
+        print $fh "$data";
+        print("updated remote clipboard on $ip\n");
+    }
 }
 
 exit main();
