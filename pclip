@@ -3,6 +3,8 @@
 use warnings;
 use strict;
 use Getopt::Long;
+use IO::Select;
+use POSIX;
 
 my @default_ips = ("dev", "qdev");
 my @ips;
@@ -11,22 +13,26 @@ my $delim = "AaAaAaAaAaKAKABbBbBb";
 my $shared = "/Users/ozelikov/Downloads/shared-dev/";
 my $remote_shared = "~/vm/shared/mac";
 my $local_tmp_file = "/tmp/pclip_tmp.txt";
+my $worker_mode = 0;
 
 GetOptions(
     "ip=s" => \@ips,
     "user=s" => \$user,
     "shared=s" => \$shared,
-    "help" => sub { print("Usage: pclip [-ip=<ip>]\n"); exit(1); }
+    "help" => sub { print("Usage: pclip [-ip=<ip>]\n"); exit(1); },
+    "worker" => \$worker_mode
 );
 
 my $remote_clip_file = "/tmp/pclip_${user}.txt";
 
 sub main
 {
+    worker() if $worker_mode;
+
     @ips = @default_ips if not @ips;
 
-    print("Starting - ".localtime()."\n");
-    print("Remote machine(s): ".join(", ", @ips)."\n");
+    info("Starting - ".localtime()."\n");
+    info("Remote machine(s): ".join(", ", @ips)."\n");
     my $fh;
 
     my $prev_remote_data = "";
@@ -78,8 +84,8 @@ sub connect_to_remote_xsel
 
     open(my $fh, "ssh $ssh_opt $ip 'while true; do DISPLAY=:0 xsel -o; echo $delim; sleep 1; done'|");
 
-    print("ssh command failed, $!\n") if not $fh;
-    print("connected to remote\n") if $fh;
+    info("ssh command failed, $!\n") if not $fh;
+    info("connected to remote\n") if $fh;
 
     return $fh;
 }
@@ -91,10 +97,12 @@ sub connect_to_remote
     $ssh_opt = "";
     my $script = "while true; do cat $remote_clip_file 2>/dev/null ; echo $delim; sleep 1; done";
 
+    info("connecting to $ip\n");
+
     open(my $fh, "ssh $ssh_opt $ip '$script' |");
 
-    print("ssh command failed, $!\n") if not $fh;
-    print("connected to $ip\n") if $fh;
+    info("ssh command failed, $!\n") if not $fh;
+    info("connected to $ip\n") if $fh;
 
     return $fh;
 }
@@ -134,28 +142,42 @@ sub get_message
     $$pfh = connect_to_remote($ip) if not $$pfh;
     my $fh = $$pfh;
     if (not $fh) {
+        print "Failed to connect to $ip, waiting 10sec\n";
         sleep(10);
         return "";
     }
 
+    my $sel = IO::Select->new($fh);
+
+    #info("waiting for message\n");
+
     while (1)
     {
-        print "reading line\n";
-        my $line = <$fh>;
-        if (not $line) {
+        $! = 0;
+        my @ready = $sel->can_read(10);
+        if (not @ready) {
+            if (not $!) {
+                info("can_read timed out\n");
+            }
+            else {
+                info("can_read failed with err $!\n");
+            }
             last;
         }
-        print localtime()." got: '$line'\n";
+
+        my $line = <$fh>;
+        if (not $line) {
+            info("line is empty\n");
+            last;
+        }
         $get_message_buf .= $line;
         my ($msg, $rest) = split /$delim\n/m, $get_message_buf;
         if (defined $msg and defined $rest) {
             $get_message_buf = $rest;
-            #print "msg: '$msg'\n";
-            #print "rest: '$rest'\n";
             return $msg;
         }
     }
-    print localtime()." - No message from peer, disconnecting\n";
+    info("No message from peer, disconnecting\n");
     close($fh);
     $$pfh = undef;
     return "";
@@ -179,7 +201,7 @@ sub copy_to_local_clipboard
     print $fh $remote_data;
     close($fh);
     system("pbcopy < $local_tmp_file");
-    print("updated local clipboard\n");
+    info("updated local clipboard\n");
 }
 
 sub copy_to_remote_clipboard_xsel
@@ -188,7 +210,7 @@ sub copy_to_remote_clipboard_xsel
     open(my $fh, "| ssh $ip 'cat -|DISPLAY=:0 xsel -i'")
         or die "ssh...xsel command failed $!";
     print $fh "$data";
-    print("updated remote clipboard\n");
+    info("updated remote clipboard\n");
 }
 
 sub copy_to_remote_clipboard
@@ -198,8 +220,20 @@ sub copy_to_remote_clipboard
         open(my $fh, "| ssh $ip 'cat > $remote_clip_file'")
             or die "ssh...cat command failed $!";
         print $fh "$data";
-        print("updated remote clipboard on $ip\n");
+        info("updated remote clipboard on $ip\n");
     }
+}
+
+sub worker
+{
+    exit 0;
+}
+
+sub info
+{
+    my ($msg) = @_;
+    my $ts = strftime("%H:%M:%S", localtime);
+    print "$ts: $msg";
 }
 
 exit main();
