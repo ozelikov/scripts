@@ -5,6 +5,7 @@ use strict;
 use Getopt::Long;
 use IO::Select;
 use POSIX;
+#use Data::Dumper;
 
 my @default_ips = ("dev", "qdev");
 my @ips;
@@ -13,68 +14,90 @@ my $delim = "AaAaAaAaAaKAKABbBbBb";
 my $shared = "/Users/ozelikov/Downloads/shared-dev/";
 my $remote_shared = "~/vm/shared/mac";
 my $local_tmp_file = "/tmp/pclip_tmp.txt";
-my $worker_mode = 0;
+my $localhost = 'localhost';
 
 GetOptions(
     "ip=s" => \@ips,
     "user=s" => \$user,
     "shared=s" => \$shared,
     "help" => sub { print("Usage: pclip [-ip=<ip>]\n"); exit(1); },
-    "worker" => \$worker_mode
 );
 
 my $remote_clip_file = "/tmp/pclip_${user}.txt";
 
 sub main
 {
-    worker() if $worker_mode;
-
     @ips = @default_ips if not @ips;
 
     info("Starting - ".localtime()."\n");
     info("Remote machine(s): ".join(", ", @ips)."\n");
-    my $fh;
 
-    my $prev_remote_data = "";
-    my $prev_local_data;
+    my %hosts = map { $_ => {
+            ip=>$_,
+            fh=>undef,
+            child=>undef,
+            get=>\&read_remote_clipboard,
+            set=>\&copy_to_remote_clipboard,
+            prev_data=>undef,
+            buffer=>""
+        } } @ips;
+
+
+    push @ips, $localhost;
+    $hosts{$localhost} = {
+        ip=>$localhost,
+        fh=>undef,
+        child=>undef,
+        get=>\&read_local_clipboard,
+        set=>\&copy_to_local_clipboard,
+        prev_data=>undef,
+    };
+
+    #print(Dumper(\%hosts));
+
     my $prev_shared_files;
 
     while (1)
     {
-        my $remote_data = get_message($ips[0], \$fh);
-        last if not defined $remote_data;
-
-        $prev_remote_data = $remote_data if not defined $prev_remote_data;
-
-        if ($remote_data ne $prev_remote_data) {
-            print "****** NEW REMOTE DATA ******\n";
-            print "'$remote_data'\n";
-            print "*****************************\n";
-            copy_to_local_clipboard($remote_data);
-            copy_to_remote_clipboard([$ips[1]], $remote_data);
-            $prev_remote_data = $remote_data;
-            $prev_local_data = undef;
-        }
-
-        my $local_data = read_local_clipboard();
-        $prev_local_data = $local_data if not defined $prev_local_data;
-        if ($local_data ne $prev_local_data) {
-            #print "len: ", length($prev_local_data), "'$prev_local_data'\n";
-            print "****** NEW LOCAL DATA *******\n";
-            print "len: ", length($local_data) ," '$local_data'\n";
-            print "*****************************\n";
-            $prev_local_data = $local_data;
-            $prev_remote_data = undef;
-            copy_to_remote_clipboard(\@ips, $local_data);
-            print "Copied to remote clipboard\n";
-        }
+        sync_clipboards(\@ips, \%hosts);
 
         my @files = sort glob("$shared/*");
         send_new_files($prev_shared_files, \@files);
         $prev_shared_files = \@files;
     }
 
+    info("Stopping\n");
     return 0;
+}
+
+sub sync_clipboards
+{
+    my ($ips, $hosts) = @_;
+
+    for my $ip (@$ips)
+    {
+        my $host = $hosts->{$ip};
+
+        my $data = $host->{'get'}->($ip, $host);
+        last if not defined $data;
+
+        if (not defined $host->{'prev_data'}) {
+            $host->{'prev_data'} = $data;
+            next;
+        }
+        elsif ($data eq $host->{'prev_data'}) {
+            next;
+        }
+
+        $hosts->{$_}->{'prev_data'} = $data foreach @$ips;
+
+        print "****** NEW DATA ON $ip ******\n";
+        print "'$data'\n";
+        my @ips_to_set = grep { $_ ne $ip } @$ips;
+        print ">>> SENDING TO ".join(" ", @ips_to_set)."\n";
+
+        $hosts->{$_}->{'set'}->($hosts->{$_}, $data) foreach @ips_to_set;
+    }
 }
 
 sub connect_to_remote_xsel
@@ -99,12 +122,20 @@ sub connect_to_remote
 
     info("connecting to $ip\n");
 
-    open(my $fh, "ssh $ssh_opt $ip '$script' |");
+    my $pid_file = "/tmp/worker_pid.txt";
+    unlink $pid_file;
+    open(my $fh, "echo \$\$ > $pid_file; exec ssh $ssh_opt $ip '$script' |");
 
     info("ssh command failed, $!\n") if not $fh;
     info("connected to $ip\n") if $fh;
 
-    return $fh;
+    my $worker_pid;
+    while (not ($worker_pid = `cat $pid_file 2>/dev/null`))
+    {
+    }
+    info("ssh process pid: $worker_pid\n");
+
+    return ($fh, $worker_pid);
 }
 
 sub send_new_files
@@ -133,14 +164,13 @@ sub send_new_files
     }
 }
 
-my $get_message_buf = "";
-my $last_status_time = time;
-sub get_message
+sub read_remote_clipboard
 {
-    my ($ip, $pfh) = @_;
+    my ($ip, $host) = @_;
+    #info("read_remote_clipboard: $ip\n");
 
-    $$pfh = connect_to_remote($ip) if not $$pfh;
-    my $fh = $$pfh;
+    ($host->{'fh'}, $host->{'child'}) = connect_to_remote($ip) if not $host->{'child'};
+    my $fh = $host->{'fh'};
     if (not $fh) {
         print "Failed to connect to $ip, waiting 10sec\n";
         sleep(10);
@@ -148,8 +178,6 @@ sub get_message
     }
 
     my $sel = IO::Select->new($fh);
-
-    #info("waiting for message\n");
 
     while (1)
     {
@@ -170,16 +198,26 @@ sub get_message
             info("line is empty\n");
             last;
         }
-        $get_message_buf .= $line;
-        my ($msg, $rest) = split /$delim\n/m, $get_message_buf;
+        $host->{'buffer'} .= $line;
+        my ($msg, $rest) = split /$delim\n/m, $host->{'buffer'};
         if (defined $msg and defined $rest) {
-            $get_message_buf = $rest;
+            $host->{'buffer'} = $rest;
             return $msg;
         }
     }
     info("No message from peer, disconnecting\n");
+
+    # 'close' does wait4 on child ssh process, but after system sleep,
+    # ssh process becomes unresponsive and 'close' gets stuck.
+    kill 'KILL', $host->{'child'} if $host->{'child'};
+    info("Sent SIGKILL to $host->{'child'}\n");
+    sleep(1);
+
+    info("Closing connection\n");
+    $host->{'fh'} = undef;
     close($fh);
-    $$pfh = undef;
+    info("Closed connection\n");
+    sleep(10);
     return "";
 }
 
@@ -190,13 +228,14 @@ sub read_local_clipboard
     $out = "" if not defined $out;
     $out =~ s/\r\n$//m;
 
+    #info("got data from local clipboard\n");
     #print $out, "\n";
     return $out;
 }
 
 sub copy_to_local_clipboard
 {
-    my ($remote_data) = @_;
+    my ($host, $remote_data) = @_;
     open(my $fh, ">$local_tmp_file") or die "couldn't open $local_tmp_file for writing, $!";
     print $fh $remote_data;
     close($fh);
@@ -206,8 +245,8 @@ sub copy_to_local_clipboard
 
 sub copy_to_remote_clipboard_xsel
 {
-    my ($ip, $data) = @_;
-    open(my $fh, "| ssh $ip 'cat -|DISPLAY=:0 xsel -i'")
+    my ($host, $data) = @_;
+    open(my $fh, "| ssh $host->{ip} 'cat -|DISPLAY=:0 xsel -i'")
         or die "ssh...xsel command failed $!";
     print $fh "$data";
     info("updated remote clipboard\n");
@@ -215,18 +254,11 @@ sub copy_to_remote_clipboard_xsel
 
 sub copy_to_remote_clipboard
 {
-    my ($ips, $data) = @_;
-    foreach my $ip (@$ips) {
-        open(my $fh, "| ssh $ip 'cat > $remote_clip_file'")
-            or die "ssh...cat command failed $!";
-        print $fh "$data";
-        info("updated remote clipboard on $ip\n");
-    }
-}
-
-sub worker
-{
-    exit 0;
+    my ($host, $data) = @_;
+    open(my $fh, "| ssh $host->{ip} 'cat > $remote_clip_file'")
+        or die "ssh...cat command failed $!";
+    print $fh "$data";
+    info("updated remote clipboard on $host->{ip}\n");
 }
 
 sub info
