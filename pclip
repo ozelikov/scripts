@@ -39,6 +39,7 @@ sub main
             get=>\&read_remote_clipboard,
             set=>\&copy_to_remote_clipboard,
             prev_data=>undef,
+            prev_prev_data=>undef, # used to handle first update after change
             buffer=>""
         } } @ips;
 
@@ -50,7 +51,7 @@ sub main
         child=>undef,
         get=>\&read_local_clipboard,
         set=>\&copy_to_local_clipboard,
-        prev_data=>undef,
+        prev_prev_data=>undef,
     };
 
     #print(Dumper(\%hosts));
@@ -62,7 +63,7 @@ sub main
         sync_clipboards(\@ips, \%hosts);
 
         my @files = sort glob("$shared/*");
-        send_new_files($prev_shared_files, \@files);
+        send_new_files($ips[0], $prev_shared_files, \@files);
         $prev_shared_files = \@files;
     }
 
@@ -83,9 +84,14 @@ sub sync_clipboards
 
         if (not defined $host->{'prev_data'}) {
             $host->{'prev_data'} = $data;
+            $host->{'prev_prev_data'} = $data;
             next;
         }
         elsif ($data eq $host->{'prev_data'}) {
+            $host->{'prev_prev_data'} = $data;
+            next;
+        }
+        elsif ($data eq $host->{'prev_prev_data'}) {
             next;
         }
 
@@ -140,7 +146,7 @@ sub connect_to_remote
 
 sub send_new_files
 {
-    my ($old_files, $new_files) = @_;
+    my ($ip, $old_files, $new_files) = @_;
 
     return if not defined $old_files;
 
@@ -159,7 +165,7 @@ sub send_new_files
 
     if (@added) {
         print "****** COPYING FILES *******\n";
-        system("scp '$_' $ips[0]:$remote_shared") foreach @added;
+        system("scp '$_' $ip:$remote_shared") foreach @added;
         print "*****************************\n";
     }
 }
@@ -199,6 +205,7 @@ sub read_remote_clipboard
             last;
         }
         $host->{'buffer'} .= $line;
+        #info("got some data: $line\n");
         my ($msg, $rest) = split /$delim\n/m, $host->{'buffer'};
         if (defined $msg and defined $rest) {
             $host->{'buffer'} = $rest;
@@ -211,6 +218,7 @@ sub read_remote_clipboard
     # ssh process becomes unresponsive and 'close' gets stuck.
     kill 'KILL', $host->{'child'} if $host->{'child'};
     info("Sent SIGKILL to $host->{'child'}\n");
+    $host->{'child'} = undef;
     sleep(1);
 
     info("Closing connection\n");
